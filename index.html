@@ -47,6 +47,11 @@ footer{display:flex;justify-content:space-between;padding:80px 0 20px;color:var(
     }
 
   </style>
+<style>
+.test-note{margin-top:14px;font-size:12px;opacity:.55;line-height:1.5;transition:opacity .3s,transform .3s}
+.test-note:hover{opacity:.9;transform:translateY(-1px)}
+.info-row strong{transition:opacity .25s,transform .25s}
+</style>
 </head>
 <body>
 <nav><div class="logo">Zl<span>//</span>Testin</div><div class="navright"><div class="status"><i class="dot"></i><span id="status">READY</span></div><button class="iconbtn" id="settingsBtn" aria-label="Settings">⚙</button></div></nav>
@@ -73,6 +78,118 @@ $('#tz').textContent=Intl.DateTimeFormat().resolvedOptions().timeZone||'—';$('
 const conn=navigator.connection||navigator.mozConnection||navigator.webkitConnection;if(conn){$('#ctype').textContent=conn.effectiveType||conn.type||'—';$('#estimate').textContent=conn.downlink?conn.downlink+' Mbps':'—';}
 async function info(){try{const r=await fetch('https://ipapi.co/json/',{cache:'no-store'});const d=await r.json();$('#ip').textContent=d.ip||'—';$('#isp').textContent=d.org||d.asn||'—';$('#location').textContent=[d.city,d.region,d.country_name].filter(Boolean).join(', ')||'—';$('#infoState').textContent='ONLINE / IP DATA'}catch{$('#infoState').textContent='LOCAL DATA ONLY'}}info();
 async function cfFetch(url,opt){return fetch(url+(url.includes('?')?'&':'?')+'zl='+Date.now()+Math.random(),{...opt,cache:'no-store',mode:'cors'})}
+
+
+async function fetchJSON(url, timeout=7000){
+  const controller = new AbortController();
+  const timer = setTimeout(()=>controller.abort(), timeout);
+  try{
+    const r = await fetch(url, {cache:"no-store", signal:controller.signal});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    return await r.json();
+  }finally{ clearTimeout(timer); }
+}
+function isIPv4(v){ return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(v||"").trim()); }
+
+async function getIPv4(){
+  const el = document.getElementById("ipv4");
+  const publicEl = document.getElementById("publicIp");
+  const sources = [
+    "https://api4.ipify.org?format=json",
+    "https://ipv4.icanhazip.com/"
+  ];
+  for(const url of sources){
+    try{
+      let data;
+      if(url.includes("icanhazip")){
+        const r = await fetch(url,{cache:"no-store"});
+        data = (await r.text()).trim();
+      }else{
+        data = (await fetchJSON(url)).ip;
+      }
+      if(isIPv4(data)){
+        if(el) el.textContent = data;
+        if(publicEl) publicEl.textContent = data;
+        return data;
+      }
+    }catch(e){}
+  }
+  if(el) el.textContent = "IPv4 недоступен";
+  return null;
+}
+
+async function networkInfo(){
+  const ipEl=document.getElementById("publicIp");
+  const ispEl=document.getElementById("isp");
+  const locEl=document.getElementById("location");
+  const tzEl=document.getElementById("timezone");
+  try{
+    const meta=await fetchJSON("https://speed.cloudflare.com/meta");
+    const ip=meta.clientIp || meta.clientIP || "";
+    if(ipEl) ipEl.textContent=ip || "—";
+    if(ispEl) ispEl.textContent=meta.asOrganization || "—";
+    const place=[meta.city,meta.region].filter(Boolean).join(", ");
+    if(locEl) locEl.textContent=place || "—";
+    if(tzEl) tzEl.textContent=meta.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "—";
+  }catch(e){
+    try{
+      const d=await fetchJSON("https://ipwho.is/");
+      if(ipEl) ipEl.textContent=d.ip || "—";
+      if(ispEl) ispEl.textContent=(d.connection&&d.connection.org)||d.org||"—";
+      const place=[d.city,d.region,d.country].filter(Boolean).join(", ");
+      if(locEl) locEl.textContent=place||"—";
+      if(tzEl) tzEl.textContent=(d.timezone&&d.timezone.id)||"—";
+    }catch(e2){}
+  }
+  getIPv4();
+}
+
+
+async function uploadTest(){
+  const duration=5500, streams=2, chunkSize=1024*1024;
+  const endAt=performance.now()+duration;
+  const body=new Uint8Array(chunkSize);
+  crypto.getRandomValues(body.subarray(0,65536));
+  let total=0, stopped=false, lastT=performance.now(), lastBytes=0;
+  const samples=[];
+
+  const tick=()=>{
+    if(stopped) return;
+    const now=performance.now();
+    const dt=(now-lastT)/1000;
+    if(dt>0.25){
+      const mbps=((total-lastBytes)*8/1e6)/dt;
+      samples.push(mbps);
+      const smooth=samples.slice(-4).reduce((a,b)=>a+b,0)/Math.min(4,samples.length);
+      updateSpeed(smooth,"upload");
+      lastT=now; lastBytes=total;
+    }
+    if(now>=endAt) stopped=true;
+    else requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+
+  const worker=async()=>{
+    while(!stopped){
+      try{
+        const r=await fetch("https://speed.cloudflare.com/__up?cachebust="+Math.random(),{
+          method:"POST",body,cache:"no-store"
+        });
+        if(r.ok) total+=body.byteLength;
+        else stopped=true;
+      }catch(e){
+        if(performance.now()>=endAt) break;
+      }
+    }
+  };
+  await Promise.all(Array.from({length:streams},worker));
+  stopped=true;
+  const elapsed=Math.max(0.001,duration/1000);
+  const result=(total*8/1e6)/elapsed;
+  updateSpeed(result,"upload",true);
+  return result;
+}
+
 async function pingTest(){const a=[];for(let i=0;i<5;i++){const t=performance.now();try{await cfFetch('https://speed.cloudflare.com/__down?bytes=0');a.push(performance.now()-t)}catch{}}if(!a.length)return null;a.sort((x,y)=>x-y);const med=a[Math.floor(a.length/2)];const mean=a.reduce((x,y)=>x+y,0)/a.length;const jit=Math.sqrt(a.reduce((s,x)=>s+(x-mean)**2,0)/a.length);return {ping:Math.round(med),jitter:Math.round(jit*10)/10}}
 async function bandwidth(type){
   // Реальное измерение: считаем фактически переданные/полученные байты и время сети.
@@ -100,5 +217,55 @@ async function bandwidth(type){
 function addHistory(d,u,p,j){const e=$('#empty');if(e)e.remove();const row=document.createElement('div');row.className='row';row.innerHTML=`<span>${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span><span>${fmt(d)} Mbps</span><span>${u==null?'—':fmt(u)+' Mbps'}</span><span>${p==null?'—':p+' ms'}</span><span>${j==null?'—':j+' ms'}</span>`;$('#history').appendChild(row);while($('#history').children.length>7)$('#history').children[1].remove();localStorage.zlHistory=$('#history').innerHTML}
 try{if(localStorage.zlHistory)$('#history').innerHTML=localStorage.zlHistory}catch{}
 start.onclick=async()=>{if(state.running)return;state.running=true;start.disabled=true;applySettings();const began=performance.now(),tick=setInterval(()=>$('#timer').textContent='00:'+String(Math.floor((performance.now()-began)/1000)).padStart(2,'0'),100);setProgress(4);phase.textContent='Latency / 5 real requests…';const q=await pingTest();if(q){$('#ping').textContent=q.ping+' ms';$('#jitter').textContent=q.jitter+' ms';$('#qPing').textContent=q.ping+' ms';$('#loaded').textContent='—'}let d=null,u=null;try{phase.textContent='Download / receiving real data…';d=await bandwidth('down');$('#down').textContent=fmt(d)+' Mbps'}catch{}try{phase.textContent='Upload / sending real data…';u=await bandwidth('up');$('#up').textContent=fmt(u)+' Mbps'}catch{$('#up').textContent='N/A'}phase.textContent=translations[localStorage.zlLang||'ru'].done==='FERTIG'?'Test abgeschlossen':(localStorage.zlLang==='en'?'Test complete':localStorage.zlLang==='de'?'Test abgeschlossen':localStorage.zlLang==='nl'?'Test voltooid':'Тест завершён');setProgress(100);if(q){addHistory(d,u,q.ping,q.jitter)}clearInterval(tick);state.running=false;start.disabled=false;applySettings()}
+
+async function downloadTest(){
+  const duration=6500, streams=4, maxBytes=300*1024*1024;
+  const endAt=performance.now()+duration;
+  const controllers=Array.from({length:streams},()=>new AbortController());
+  let total=0, stopped=false;
+  const samples=[];
+  const start=performance.now();
+
+  const tick=()=>{
+    if(stopped) return;
+    const now=performance.now(), elapsed=Math.max(0.001,(now-start)/1000);
+    const mbps=(total*8/1e6)/elapsed;
+    samples.push(mbps);
+    const smooth=samples.slice(-4).reduce((a,b)=>a+b,0)/Math.min(4,samples.length);
+    updateSpeed(smooth,"download");
+    if(now>=endAt){ stopped=true; controllers.forEach(c=>c.abort()); }
+    else requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+
+  const worker=async(controller)=>{
+    try{
+      const r=await fetch("https://speed.cloudflare.com/__down?bytes="+maxBytes+"&cachebust="+Math.random(),{
+        cache:"no-store",signal:controller.signal
+      });
+      const reader=r.body?.getReader();
+      if(!reader) return;
+      while(!stopped){
+        const {done,value}=await reader.read();
+        if(done) break;
+        if(value) total+=value.byteLength;
+        if(performance.now()>=endAt){ stopped=true; break; }
+      }
+      try{ reader.cancel(); }catch(e){}
+    }catch(e){}
+  };
+  await Promise.all(controllers.map(c=>worker(c)));
+  stopped=true; controllers.forEach(c=>c.abort());
+  const finalSamples=samples.slice(Math.max(0,samples.length-5));
+  const result=finalSamples.length
+    ? finalSamples.reduce((a,b)=>a+b,0)/finalSamples.length
+    : (total*8/1e6)/Math.max(0.001,(performance.now()-start)/1000);
+  updateSpeed(result,"download",true);
+  return result;
+}
+
+
+networkInfo();
 </script>
+<div class="test-note">Измеряется реальный трафик браузера до тестового узла Cloudflare. Результат может отличаться от других сервисов из-за маршрута и сервера.</div>
 </body></html>
